@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+akshare
+pandas
+pandas_ta
+numpy
+scipy
+requests
