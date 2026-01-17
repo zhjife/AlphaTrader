@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AlphaTrader Pro - A股全维量化终端</title>
+    <style>
+        :root { --bg: #0f1115; --card: #1b1e26; --text: #e0e0e0; --red: #f6465d; --green: #0ecb81; --blue: #2979ff; }
+        body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        
+        /* 顶部搜索栏 */
+        .header { display: flex; gap: 10px; margin-bottom: 30px; justify-content: center; }
+        input { background: var(--card); border: 1px solid #333; color: white; padding: 12px; border-radius: 4px; font-size: 16px; outline: none; }
+        button { background: var(--blue); color: white; border: none; padding: 12px 24px; border-radius: 4px; font-size: 16px; cursor: pointer; }
+        button:hover { background: #1e60d8; }
+
+        /* 结果面板 Grid */
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; display: none; }
+        .card { background: var(--card); padding: 20px; border-radius: 8px; border-top: 3px solid transparent; }
+        .card h3 { margin-top: 0; color: #8b949e; font-size: 0.9em; border-bottom: 1px solid #333; padding-bottom: 10px; }
+        ul { padding-left: 20px; line-height: 1.6; font-size: 0.95em; }
+        li { margin-bottom: 8px; }
+
+        /* 特定卡片样式 */
+        .verdict-card { grid-column: 1 / -1; text-align: center; border-color: var(--blue); background: linear-gradient(180deg, #1b1e26 0%, #161920 100%); }
+        .tech-card { border-top-color: var(--blue); }
+        .money-card { border-top-color: #f0b90b; }
+        .risk-card { border-top-color: var(--red); }
+
+        /* 价格与分数 */
+        .big-price { font-size: 2.5em; font-weight: bold; margin: 10px 0; }
+        .score-badge { display: inline-block; background: #333; padding: 5px 15px; border-radius: 20px; font-weight: bold; color: #f0b90b; margin-left: 10px; }
+        
+        .up { color: var(--red); }
+        .down { color: var(--green); }
+        
+        /* Loading 动画 */
+        .loading { text-align: center; display: none; margin-top: 50px; color: #888; }
+        .spinner { width: 40px; height: 40px; border: 4px solid #333; border-top: 4px solid var(--blue); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 20px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div style="text-align: center; margin-bottom: 20px;">
+        <h1 style="margin:0; letter-spacing: 2px;">ALPHA TRADER <span style="color:var(--blue)">PRO</span></h1>
+        <p style="color: #666; font-size: 0.9em;">A股智能量化投研系统 | 战法识别 | 筹码分析 | 风险控制</p>
+    </div>
+
+    <div class="header">
+        <input type="text" id="code" placeholder="输入代码 (如 600519)" value="600519">
+        <button onclick="start()">开始分析</button>
+    </div>
+
+    <div id="loading" class="loading">
+        <div class="spinner"></div>
+        <div>正在连接交易所数据接口...<br>正在进行多因子量化运算...</div>
+    </div>
+
+    <div id="dashboard" class="grid">
+        <!-- 核心结论区 -->
+        <div class="card verdict-card">
+            <h2 id="name">--</h2>
+            <div id="price-area">
+                <span id="price" class="big-price">--</span>
+                <span id="pct" style="font-size: 1.2em;">--</span>
+            </div>
+            <div style="margin-top: 15px;">
+                AI 综合评分: <span id="score" class="score-badge">--</span>
+                <div id="verdict" style="margin-top:10px; font-size: 1.2em; font-weight: bold; color: var(--blue);">--</div>
+            </div>
+        </div>
+
+        <!-- 技术面 -->
+        <div class="card tech-card">
+            <h3>📈 技术面与战法 (Technical)</h3>
+            <ul id="tech-list"></ul>
+        </div>
+
+        <!-- 资金与筹码 -->
+        <div class="card money-card">
+            <h3>💰 资金与筹码 (Capital & Chips)</h3>
+            <ul id="capital-list"></ul>
+        </div>
+
+        <!-- 基本面 -->
+        <div class="card">
+            <h3>🏢 基本面 (Fundamental)</h3>
+            <ul id="fund-list"></ul>
+        </div>
+
+        <!-- 风控 -->
+        <div class="card risk-card">
+            <h3>🛡️ 风控与策略 (Risk Control)</h3>
+            <ul id="risk-list"></ul>
+        </div>
+
+        <!-- 消息 -->
+        <div class="card" style="grid-column: 1 / -1;">
+            <h3>📰 实时舆情 (News)</h3>
+            <div id="news-list" style="font-size: 0.9em; color: #ccc;"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    async function start() {
+        const code = document.getElementById('code').value;
+        const dash = document.getElementById('dashboard');
+        const load = document.getElementById('loading');
+        
+        if(code.length !== 6) return alert("请输入6位A股代码");
+        
+        dash.style.display = 'none';
+        load.style.display = 'block';
+
+        try {
+            // 注意：这里连接的是本地Python服务
+            const res = await fetch(`http://127.0.0.1:8000/analyze/${code}`);
+            const data = await res.json();
+            
+            if(data.error) { alert(data.error); return; }
+
+            // 渲染头部
+            document.getElementById('name').innerText = `${data.name} (${code})`;
+            const priceEl = document.getElementById('price');
+            priceEl.innerText = data.price;
+            priceEl.className = `big-price ${data.pct >= 0 ? 'up' : 'down'}`;
+            
+            const pctEl = document.getElementById('pct');
+            pctEl.innerText = `${data.pct}%`;
+            pctEl.className = data.pct >= 0 ? 'up' : 'down';
+
+            document.getElementById('score').innerText = data.score;
+            document.getElementById('verdict').innerText = data.verdict;
+
+            // 渲染列表函数
+            const renderList = (id, arr) => {
+                const ul = document.getElementById(id);
+                ul.innerHTML = '';
+                if(arr.length === 0) ul.innerHTML = '<li>暂无特别信号</li>';
+                arr.forEach(txt => {
+                    const li = document.createElement('li');
+                    li.innerHTML = txt; // 支持emoji
+                    ul.appendChild(li);
+                });
+            };
+
+            renderList('tech-list', data.report.technical);
+            renderList('capital-list', data.report.capital);
+            renderList('fund-list', data.report.fundamental);
+            renderList('risk-list', data.report.risk);
+
+            // 渲染新闻
+            const newsDiv = document.getElementById('news-list');
+            newsDiv.innerHTML = '';
+            data.news.forEach(n => {
+                const d = document.createElement('div');
+                d.style.marginBottom = '8px';
+                d.innerHTML = `<span style="color:#666">[${n.date}]</span> ${n.title}`;
+                newsDiv.appendChild(d);
+            });
+
+            load.style.display = 'none';
+            dash.style.display = 'grid';
+
+        } catch(e) {
+            alert("无法连接后台！请确保 main.py 正在运行。");
+            load.style.display = 'none';
+        }
+    }
+</script>
+</body>
+</html>
