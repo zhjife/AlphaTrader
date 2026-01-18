@@ -29,7 +29,6 @@ class AlphaGalaxyExcelSystem:
         print(f"🚀 正在提取 {self.symbol} 的全维数据...")
         try:
             spot = ak.stock_zh_a_spot_em()
-            # 兼容性处理：防止部分股票未找到报错
             target_spot = spot[spot['代码'] == self.symbol]
             if target_spot.empty:
                 print(f"❌ 错误：未找到代码 {self.symbol}，请检查代码是否正确。")
@@ -46,15 +45,16 @@ class AlphaGalaxyExcelSystem:
             hist.rename(columns={'日期':'date', '开盘':'open', '收盘':'close', '最高':'high', '最低':'low', '成交量':'volume', '换手率':'turnover'}, inplace=True)
             self.data['hist'] = hist
             
-            # --- 资金流容错处理 ---
+            # --- 资金流容错处理 (关键修改) ---
             try:
                 flow = ak.stock_individual_fund_flow(stock=self.symbol, market="sh" if self.symbol.startswith("6") else "sz")
+                # 确保获取到了数据且不为空
                 if flow is not None and not flow.empty:
                     self.data['flow'] = flow.sort_values('日期').tail(10)
                 else:
-                    self.data['flow'] = pd.DataFrame() # 空表
+                    self.data['flow'] = pd.DataFrame() # 给个空表
             except:
-                self.data['flow'] = pd.DataFrame() # 获取失败则给空表
+                self.data['flow'] = pd.DataFrame() # 报错也给空表
             
             try:
                 self.data['news'] = ak.stock_news_em(symbol=self.symbol)
@@ -98,18 +98,22 @@ class AlphaGalaxyExcelSystem:
         elif winner_pct < 10: chip_status = "冰点/超跌"; chip_logic = "90%的人被套牢，上方全是压力"
         self._add_metric("筹码获利盘", f"{int(winner_pct)}%", chip_status, "超过90%说明容易发生踩踏式卖出。", chip_logic)
 
-        # 3. 资金 (增加容错)
+        # 3. 资金 (完全容错逻辑 - 修复报错的核心)
         flow_val = 0
         flow_status = "数据缺失"
-        flow_logic = "未能获取到该股的实时资金流数据"
+        flow_logic = "该股暂无实时主力资金流数据，跳过此项判断"
         
+        # 只有当flow不为空，并且包含了'主力净流入净额'这一列时，才去计算
         if not flow.empty and '主力净流入净额' in flow.columns:
-            net_flow_3d = flow['主力净流入净额'].iloc[-3:].sum()
-            flow_val = round(net_flow_3d / 100000000, 2)
-            flow_status = "流入" if flow_val > 0 else "流出"
-            if flow_val < -1: flow_status = "主力出逃"
-            elif flow_val > 1: flow_status = "主力抢筹"
-            flow_logic = f"近3日累计净{'流入' if flow_val>0 else '流出'} {abs(flow_val)} 亿"
+            try:
+                net_flow_3d = flow['主力净流入净额'].iloc[-3:].sum()
+                flow_val = round(net_flow_3d / 100000000, 2)
+                flow_status = "流入" if flow_val > 0 else "流出"
+                if flow_val < -1: flow_status = "主力出逃"
+                elif flow_val > 1: flow_status = "主力抢筹"
+                flow_logic = f"近3日累计净{'流入' if flow_val>0 else '流出'} {abs(flow_val)} 亿"
+            except:
+                pass # 如果计算出错，保持默认值
         
         self._add_metric("主力资金 (近3日)", f"{flow_val} 亿元", flow_status, "股价涨但资金流出是诱多；股价跌但资金流入是洗盘。", flow_logic)
 
