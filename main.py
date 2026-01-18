@@ -97,11 +97,25 @@ class AlphaGalaxyUltimate:
         df['j'] = 3 * df['k'] - 2 * df['d']
         
         # RSI
+        # 4. RSI (修正为同花顺算法: Wilder's Smoothing)
+        # 也就是 RSI 1/2/3 分别对应 6/12/24 日
         delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(6).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(6).mean()
-        rs = gain / loss
-        df['rsi'] = 100 - (100 / (1 + rs))
+        # 将涨跌幅分开
+        up = delta.clip(lower=0)
+        down = -1 * delta.clip(upper=0)
+        
+        # 计算三条线
+        for period in [6, 12, 24]:
+            # 使用 alpha=1/period 模拟同花顺的 SMA(N,1) 权重算法
+            ema_up = up.ewm(alpha=1/period, adjust=False).mean()
+            ema_down = down.ewm(alpha=1/period, adjust=False).mean()
+            rs = ema_up / ema_down
+            # 存入 rsi6, rsi12, rsi24
+            df[f'rsi_{period}'] = 100 - (100 / (1 + rs))
+
+        # 为了兼容后面的策略逻辑，把 rsi_6 赋值给 rsi
+        df['rsi'] = df['rsi_6'] 
+       
         
         # BOLL
         df['std'] = df['close'].rolling(20).std()
