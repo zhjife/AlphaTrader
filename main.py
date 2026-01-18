@@ -461,6 +461,29 @@ class AlphaGalaxyUltimate:
         print(f"✅ 完成！请下载。")
 
 if __name__ == "__main__":
-    print("Alpha Galaxy Omni-Logic Ultimate (Full Patterns)")
-    code = input("Input Stock Code: ").strip()
-    if code: AlphaGalaxyUltimate(code).save_excel()
+    print("="*40)
+    print("🚀 Alpha Galaxy 全形态终极版已启动")
+    print("退出请按 Ctrl+C 或输入 q")
+    print("="*40)
+    
+    while True:
+        try:
+            # 加入一个空行让界面更清晰
+            print("\n" + "-"*30) 
+            code = input(">> 请输入股票代码: ").strip()
+            
+            # 输入 q 或 exit 退出循环
+            if code.lower() in ['q', 'exit', 'quit']:
+                print("程序已退出。")
+                break
+                
+            if code: 
+                # 这里必须确保你已经修复了之前提到的 df 报错问题
+                AlphaGalaxyUltimate(code).save_excel()
+                
+        except KeyboardInterrupt:
+            # 允许使用 Ctrl+C 安全退出
+            print("\n程序已停止。")
+            break
+        except Exception as e:
+            print(f"发生未知错误，请重试: {e}")
