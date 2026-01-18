@@ -241,5 +241,5 @@ class AlphaGalaxyQuantSystem:
 
 if __name__ == "__main__":
     print("Alpha Galaxy Quant Verification (Pro Fixed)")
-    code = input("Input Stock Code: ").strip()
+    code = input("输入股票代码: ").strip()
     if code: AlphaGalaxyQuantSystem(code).save_excel()
