@@ -440,7 +440,10 @@ class AlphaGalaxyUltimate:
     def save_excel(self):
         if not self._fetch_data(): return
         self._analyze()
-        filename = f"{self.symbol}_{self.data['spot']['名称']}_全逻辑终极版.xlsx"
+        # [修改点] 加入时间戳到分钟 (YYYYMMDD_HHMM)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        filename = f"{self.symbol}_{self.data['spot']['名称']}_全逻辑终极版_{timestamp}.xlsx"
+        
         print(f"💾 生成报告: {filename} ...")
         with pd.ExcelWriter(filename, engine='openpyxl') as writer:
             s_data = [
