@@ -79,55 +79,50 @@ class AlphaGalaxyUltimate:
 
     # ================= 2. 指标计算引擎 =================
     def _calc_indicators(self, df):
-        # 均线系统
-        for w in [5, 10, 20, 60, 120, 250]: df[f'ma{w}'] = df['close'].rolling(w).mean()
+        # 1. 基础均线 (MA) - 简单平均，无争议
+        for w in [5, 10, 20, 60, 120, 250]: 
+            df[f'ma{w}'] = df['close'].rolling(w).mean()
         
-        # MACD
+        # 2. MACD (标准 12, 26, 9) - 指数加权
         ema12 = df['close'].ewm(span=12, adjust=False).mean()
         ema26 = df['close'].ewm(span=26, adjust=False).mean()
         df['dif'] = ema12 - ema26
         df['dea'] = df['dif'].ewm(span=9, adjust=False).mean()
         
-        # KDJ
+        # 3. KDJ (A股标准 9, 3, 3) - 权重递归
         low_9 = df['low'].rolling(9).min()
         high_9 = df['high'].rolling(9).max()
         rsv = (df['close'] - low_9) / (high_9 - low_9) * 100
-        df['k'] = rsv.ewm(com=2).mean()
-        df['d'] = df['k'].ewm(com=2).mean()
+        # com=2 等同于 alpha=1/3，符合国内公式：Y = (2*Y_prev + X)/3
+        df['k'] = rsv.ewm(com=2, adjust=False).mean()
+        df['d'] = df['k'].ewm(com=2, adjust=False).mean()
         df['j'] = 3 * df['k'] - 2 * df['d']
         
-        # RSI
-        # 4. RSI (修正为同花顺算法: Wilder's Smoothing)
-        # 也就是 RSI 1/2/3 分别对应 6/12/24 日
+        # 4. RSI (修正版: Wilder's Smoothing) - 解决数值偏小问题
         delta = df['close'].diff()
-        # 将涨跌幅分开
         up = delta.clip(lower=0)
         down = -1 * delta.clip(upper=0)
         
-        # 计算三条线
         for period in [6, 12, 24]:
-            # 使用 alpha=1/period 模拟同花顺的 SMA(N,1) 权重算法
+            # alpha=1/period 精确模拟 Wilder 平滑
             ema_up = up.ewm(alpha=1/period, adjust=False).mean()
             ema_down = down.ewm(alpha=1/period, adjust=False).mean()
             rs = ema_up / ema_down
-            # 存入 rsi6, rsi12, rsi24
             df[f'rsi_{period}'] = 100 - (100 / (1 + rs))
-
-        # 为了兼容后面的策略逻辑，把 rsi_6 赋值给 rsi
-        df['rsi'] = df['rsi_6'] 
-       
+        df['rsi'] = df['rsi_6'] # 策略逻辑使用 RSI6
         
-        # BOLL
+        # 5. BOLL (布林带) - 标准统计学公式
         df['std'] = df['close'].rolling(20).std()
         df['up'] = df['ma20'] + 2 * df['std']
         df['dn'] = df['ma20'] - 2 * df['std']
-        df['bb_width'] = (df['up'] - df['dn']) / df['ma20']
         
-        # ATR & Drawdown
+        # 6. ATR (修正版: Wilder's Smoothing) - 解决止损位误差
+        # TR计算方法不变
         df['tr'] = np.maximum(df['high'] - df['low'], abs(df['high'] - df['close'].shift(1)))
-        df['atr'] = df['tr'].rolling(14).mean()
-        roll_max = df['close'].rolling(250, min_periods=1).max()
-        df['drawdown'] = (df['close'] / roll_max) - 1.0
+        # [修改点] 将 rolling(14) 改为 ewm(alpha=1/14)
+        # 这样 ATR 曲线会更平滑，和软件上的 ATR 指标重合
+        df['atr'] = df['tr'].ewm(alpha=1/14, adjust=False).mean()
+        
         
         # OBV & CMF
         df['obv'] = (np.sign(df['close'].diff()) * df['volume']).fillna(0).cumsum()
