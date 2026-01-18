@@ -358,7 +358,7 @@ class AlphaGalaxyUltimate:
             except: pass
             
         # 运行模块
-        bull_pats, bear_pats = self._analyze_pattern_full(self.data['hist']) # K线全库
+        bull_pats, bear_pats = self._analyze_pattern_full(df) # K线全库
         combo_signals, combo_logic, combo_verdict = self._check_combo_logic(curr, flow_val) # 组合战法
         win_rate = self._run_backtest(df)
         stop_price = close - 2 * curr['atr']
