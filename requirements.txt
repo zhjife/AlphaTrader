@@ -1,8 +1,7 @@
-fastapi
-uvicorn
 akshare
 pandas
-pandas_ta
 numpy
-scipy
+snownlp
+openpyxl
+tqdm
 requests
