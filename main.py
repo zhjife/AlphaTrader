@@ -21,7 +21,9 @@ class AlphaGalaxyQuantSystem:
             "exp_return": 0,      # 期望收益
             "logic": []
         }
+        # 修复点：这里补上了漏掉的定义
         self.metrics = []
+        self.levels_list = []  
         
         # 识别指数
         if self.symbol.startswith('6'):
@@ -128,7 +130,6 @@ class AlphaGalaxyQuantSystem:
         close = hist['close'].iloc[-1]
         
         # --- 1. 市场宏观滤网 (Market Regime) ---
-        # 如果大盘指数跌破20日线，属于弱势，强制降仓
         market_ok = True
         idx_df = self.data['index']
         if not idx_df.empty:
@@ -152,6 +153,7 @@ class AlphaGalaxyQuantSystem:
         # --- 3. 技术与资金分析 ---
         ma20 = hist['close'].rolling(20).mean().iloc[-1]
         ma60 = hist['close'].rolling(60).mean().iloc[-1]
+        trend_status = "多头" if close > ma20 else "空头"
         
         # 资金流
         flow_val = 0
@@ -170,7 +172,6 @@ class AlphaGalaxyQuantSystem:
         stop = close - 2 * atr
 
         # --- 4. 最终裁决 (Verdict) ---
-        # 逻辑：即使指标金叉，如果历史回测胜率<40%，也不买！
         
         reasons = []
         verdict = "观望"
@@ -205,7 +206,7 @@ class AlphaGalaxyQuantSystem:
         # 基础指标
         self._add_metric("主力资金", f"{flow_val}亿", "流入" if flow_val>0 else "流出", "主力动向", "近3日净额")
         
-        # 生成点位
+        # 生成点位 (修复点：确保 levels_list 已定义)
         self.levels_list.append(["🔴 动态止损", round(stop, 2), "硬风控"])
         if close < ma60: self.levels_list.append(["🔴 机构成本线", round(ma60, 2), "压力"])
         else: self.levels_list.append(["🟢 机构成本线", round(ma60, 2), "支撑"])
@@ -239,6 +240,6 @@ class AlphaGalaxyQuantSystem:
         print(f"✅ 完成！请下载。")
 
 if __name__ == "__main__":
-    print("Alpha Galaxy Quant Verification (Pro)")
+    print("Alpha Galaxy Quant Verification (Pro Fixed)")
     code = input("Input Stock Code: ").strip()
     if code: AlphaGalaxyQuantSystem(code).save_excel()
