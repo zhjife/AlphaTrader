@@ -239,5 +239,5 @@ class AlphaGalaxyFusionSystem:
 
 if __name__ == "__main__":
     print("Alpha Galaxy Fusion System (Multi-Factor)")
-    code = input("Input Stock Code: ").strip()
+    code = input("输入股票代码: ").strip()
     if code: AlphaGalaxyFusionSystem(code).save_excel()
