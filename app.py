@@ -6,18 +6,28 @@ from snownlp import SnowNLP
 from datetime import datetime, timedelta
 import warnings
 import io
+from concurrent.futures import ThreadPoolExecutor
 
 # 忽略警告
 warnings.filterwarnings('ignore')
 
 # --- 页面基础配置 ---
-st.set_page_config(page_title="Alpha Galaxy 完整增强版", layout="wide")
+st.set_page_config(page_title="Alpha Galaxy 极速版", layout="wide")
 
-# ================= 核心类定义 (1:1 完整移植 + 进度条回调) =================
+# ================= 0. 缓存加速层 (新增优化) =================
+# 加上这个装饰器，Streamlit 会把结果存起来，默认 5 分钟(300秒)内不再重复下载全市场数据
+# 这样切换不同股票时，速度会飞快
+@st.cache_data(ttl=300)
+def get_market_spot_data():
+    try:
+        return ak.stock_zh_a_spot_em()
+    except:
+        return pd.DataFrame()
+
+# ================= 核心类定义 =================
 class AlphaGalaxyUltimate:
-    def __init__(self, symbol, progress_callback=None):
+    def __init__(self, symbol):
         self.symbol = str(symbol)
-        self.progress_callback = progress_callback # 新增：进度回调函数
         self.data = {}
         self.report = {
             "verdict": "观望", "risk_level": "中", 
@@ -34,63 +44,75 @@ class AlphaGalaxyUltimate:
         elif self.symbol.startswith('8') or self.symbol.startswith('4'): self.index_name = "北证50"
         else: self.index_name = "深证成指"
 
-    # 辅助方法：更新进度
-    def _update_progress(self, percent, message):
-        if self.progress_callback:
-            self.progress_callback(percent, message)
-
-    # ================= 1. 数据中台 =================
-    def _fetch_data(self):
-        self._update_progress(10, f"正在连接交易所接口，读取 {self.symbol} 实时行情...")
+    # ================= 1. 数据中台 (改为多线程并行) =================
+    def _fetch_data_parallel(self):
+        st.toast(f"🚀 [极速扫描] 正在并发读取 {self.symbol} ...")
         
-        # 1.1 实时行情
-        try:
-            spot = ak.stock_zh_a_spot_em()
-            target = spot[spot['代码'] == self.symbol]
-            
-            if not target.empty:
-                target = target.copy()
-                for col in ['市盈率-动态', '市净率', '总市值', '换手率', '最新价']:
-                    if col in target.columns:
-                        target[col] = pd.to_numeric(target[col], errors='coerce')
-                self.data['spot'] = target.iloc[0]
-            else:
-                self.data['spot'] = {
-                    '名称': self.symbol, '最新价': 0, '市盈率-动态': -1, '市净率': -1, '换手率': 0
-                }
-        except Exception as e:
-            self.data['spot'] = {'名称': self.symbol, '市盈率-动态': -1, '市净率': -1}
+        # 定义独立的任务函数
+        def task_hist():
+            try:
+                end = datetime.now().strftime("%Y%m%d")
+                start = (datetime.now() - timedelta(days=730)).strftime("%Y%m%d")
+                # 尝试读取
+                df = ak.stock_zh_a_hist(symbol=self.symbol, period='daily', start_date=start, end_date=end, adjust='qfq')
+                if df is not None and not df.empty:
+                    df.rename(columns={'日期':'date', '开盘':'open', '收盘':'close', '最高':'high', '最低':'low', '成交量':'volume', '换手率':'turnover'}, inplace=True)
+                    return df
+            except: pass
+            return None
 
-        # 1.2 历史K线
-        self._update_progress(25, "正在下载近两年历史K线数据...")
-        try:
-            end = datetime.now().strftime("%Y%m%d")
-            start = (datetime.now() - timedelta(days=730)).strftime("%Y%m%d")
-            hist = ak.stock_zh_a_hist(symbol=self.symbol, period='daily', start_date=start, end_date=end, adjust='qfq')
-            
-            if hist is None or hist.empty:
-                return False
-                
-            hist.rename(columns={'日期':'date', '开盘':'open', '收盘':'close', '最高':'high', '最低':'low', '成交量':'volume', '换手率':'turnover'}, inplace=True)
-            self.data['hist'] = hist
-            
-            # 补全缺失数据
-            if self.data['spot'].get('最新价', 0) == 0: self.data['spot']['最新价'] = hist.iloc[-1]['close']
-            if self.data['spot'].get('换手率', 0) == 0 and 'turnover' in hist.columns: self.data['spot']['换手率'] = hist.iloc[-1]['turnover']
-                 
-        except Exception as e:
-            st.error(f"K线数据获取失败: {e}")
+        def task_flow():
+            try:
+                mkt = "sh" if self.symbol.startswith("6") else "sz"
+                flow = ak.stock_individual_fund_flow(stock=self.symbol, market=mkt)
+                if flow is not None and not flow.empty:
+                    return flow.sort_values('日期').tail(10)
+            except: pass
+            return pd.DataFrame()
+
+        def task_news():
+            try:
+                return ak.stock_news_em(symbol=self.symbol)
+            except: return pd.DataFrame()
+
+        # --- 核心优化：使用线程池同时运行 ---
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            # 1. 实时行情 (利用缓存，极快)
+            # 注意：实时行情不放入线程池，因为我们要利用 Streamlit 的全局缓存
+            try:
+                full_spot = get_market_spot_data()
+                target = full_spot[full_spot['代码'] == self.symbol]
+                if not target.empty:
+                    target = target.copy()
+                    for col in ['市盈率-动态', '市净率', '总市值', '换手率', '最新价']:
+                        if col in target.columns:
+                            target[col] = pd.to_numeric(target[col], errors='coerce')
+                    self.data['spot'] = target.iloc[0]
+                else:
+                    self.data['spot'] = {'名称': self.symbol, '最新价': 0, '市盈率-动态': -1, '市净率': -1, '换手率': 0}
+            except:
+                self.data['spot'] = {'名称': self.symbol, '市盈率-动态': -1, '市净率': -1}
+
+            # 2. 并行发起网络请求 (Hist, Flow, News)
+            future_hist = executor.submit(task_hist)
+            future_flow = executor.submit(task_flow)
+            future_news = executor.submit(task_news)
+
+            # 3. 获取结果
+            self.data['hist'] = future_hist.result()
+            self.data['flow'] = future_flow.result()
+            self.data['news'] = future_news.result()
+
+        # 检查关键数据
+        if self.data['hist'] is None:
+            st.error(f"❌ 无法获取 K 线数据，请检查代码 {self.symbol} 是否正确。")
             return False
 
-        # 1.3 资金流 & 舆情
-        self._update_progress(40, "正在追踪主力资金流向与舆情...")
-        try:
-            flow = ak.stock_individual_fund_flow(stock=self.symbol, market="sh" if self.symbol.startswith("6") else "sz")
-            self.data['flow'] = flow.sort_values('日期').tail(10) if (flow is not None and not flow.empty) else pd.DataFrame()
-        except: self.data['flow'] = pd.DataFrame()
-        
-        try: self.data['news'] = ak.stock_news_em(symbol=self.symbol)
-        except: self.data['news'] = pd.DataFrame()
+        # 数据补全
+        if self.data['spot'].get('最新价', 0) == 0: 
+            self.data['spot']['最新价'] = self.data['hist'].iloc[-1]['close']
+        if self.data['spot'].get('换手率', 0) == 0 and 'turnover' in self.data['hist'].columns:
+            self.data['spot']['换手率'] = self.data['hist'].iloc[-1]['turnover']
 
         return True
 
@@ -256,9 +278,7 @@ class AlphaGalaxyUltimate:
 
     # ================= 6. 核心逻辑 =================
     def _check_combo_logic(self, curr, flow_val, sentiment_score, k_score, winner_pct):
-        signals = []
-        reasons = []
-        score = 0
+        signals = []; reasons = []; score = 0
         priority_verdict = None 
         close = curr['close']
         
@@ -276,53 +296,31 @@ class AlphaGalaxyUltimate:
         if pb > 10: score -= 5; reasons.append(f"⚠️ [基本面] 高市净率")
 
         # 3. 风控
-        if curr.get('turnover', 0) > 15 and abs(curr['pct_change']) < 3:
-            score -= 20; reasons.append("💀 [风控] 高换手滞涨")
-        
+        if curr.get('turnover', 0) > 15 and abs(curr['pct_change']) < 3: score -= 20; reasons.append("💀 [风控] 高换手滞涨")
         if winner_pct > 95: score -= 10; reasons.append(f"⚠️ [筹码] 获利盘高({int(winner_pct)}%)")
         elif winner_pct < 5: score += 10; reasons.append(f"💰 [筹码] 获利盘低({int(winner_pct)}%)")
 
         # 4. 战法
         is_low = close < curr['ma60'] * 1.15
         if is_low and curr.get('turnover', 0) > 3 and curr['vol_ratio'] > 1.8:
-            signals.append("主力启动")
-            reasons.append("🔥 [组合A] 低位放量启动")
-            score += 15
-            priority_verdict = "买入"
+            signals.append("主力启动"); reasons.append("🔥 [组合A] 低位放量启动"); score += 15; priority_verdict = "买入"
         elif close > curr['ma20'] and curr.get('turnover', 0) < 3 and 0.7 < curr['vol_ratio'] < 1.3:
-            signals.append("主力锁筹")
-            reasons.append("🔒 [组合A] 缩量锁筹")
-            score += 10
+            signals.append("主力锁筹"); reasons.append("🔒 [组合A] 缩量锁筹"); score += 10
             if priority_verdict is None: priority_verdict = "持有"
 
         if curr['dif'] > curr['dea'] and curr['rsi'] > 80:
-            signals.append("假买点")
-            reasons.append("🚫 [组合B] MACD金叉但RSI过热")
-            score -= 5
+            signals.append("假买点"); reasons.append("🚫 [组合B] MACD金叉但RSI过热"); score -= 5
             if priority_verdict == "买入": priority_verdict = "观察"
         
-        if curr['j'] < 0: reasons.append(f"📈 [指标] J值超卖"); score += 10
-        elif curr['j'] > 100: reasons.append(f"📉 [指标] J值钝化"); score -= 5
-        
         if close < curr['dn'] and (flow_val > 0.5 or curr['cmf'] > 0.1):
-            signals.append("黄金坑")
-            reasons.append("💰 [组合C] 跌破下轨+资金流入")
-            score += 20
-            priority_verdict = "低吸"
+            signals.append("黄金坑"); reasons.append("💰 [组合C] 跌破下轨+资金流入"); score += 20; priority_verdict = "低吸"
             
-        if curr['bb_width'] < 0.10: reasons.append(f"⚡ [变盘] 布林带宽收窄")
-        if curr['cmf'] > 0.1: score += 5; reasons.append(f"🌊 [资金] CMF积极")
-
         return signals, reasons, priority_verdict, score
 
     # ================= 7. 综合分析主控 =================
     def _analyze(self):
-        self._update_progress(55, "正在计算 RSI, MACD, Bollinger 等 12 种技术指标...")
         df = self._calc_indicators(self.data['hist'].copy())
-        
-        self._update_progress(65, "正在进行 K 线形态识别与筹码分布计算...")
         winner_pct = self._calc_chip_winner(df)
-        
         curr = df.iloc[-1]
         close = curr['close']
         
@@ -330,36 +328,24 @@ class AlphaGalaxyUltimate:
         if not self.data['flow'].empty and '主力净流入净额' in self.data['flow'].columns:
             try: flow_val = round(self.data['flow']['主力净流入净额'].iloc[-3:].sum() / 1e8, 2)
             except: pass
-        
-        self._update_progress(75, "正在运行 Alpha Galaxy 核心决策逻辑...")
+            
         s_score, s_msg = self._analyze_sentiment()
         bull_pats, bear_pats, k_score = self._analyze_pattern_full(df)
         combo_signals, combo_logic, combo_verdict, final_score = self._check_combo_logic(curr, flow_val, s_score, k_score, winner_pct)
         stop_price = close - 2 * curr['atr']
         
         verdict = "观望"; risk = "中"
-        
-        if s_score < -10:
-            verdict = "避险卖出"; risk = "极高"
-        elif close < stop_price:
-            verdict = "清仓止损"; risk = "极高"; combo_logic.insert(0, f"❌ [风控] 跌破ATR止损")
-        elif "断头铡刀" in bear_pats or "三只乌鸦" in bear_pats:
-            verdict = "离场"; risk = "高"; combo_logic.append(f"❌ [K线] 恶劣形态")
-        elif combo_verdict:
-            verdict = combo_verdict
-        elif final_score >= 60:
-            verdict = "买入" if flow_val > 0 else "观察"
-            risk = "低" if flow_val > 0 else "中"
-        elif final_score < 0:
-            verdict = "减仓"; risk = "高"
+        if s_score < -10: verdict = "避险卖出"; risk = "极高"
+        elif close < stop_price: verdict = "清仓止损"; risk = "极高"; combo_logic.insert(0, f"❌ [风控] 跌破ATR止损")
+        elif "断头铡刀" in bear_pats or "三只乌鸦" in bear_pats: verdict = "离场"; risk = "高"; combo_logic.append(f"❌ [K线] 恶劣形态")
+        elif combo_verdict: verdict = combo_verdict
+        elif final_score >= 60: verdict = "买入" if flow_val > 0 else "观察"; risk = "低" if flow_val > 0 else "中"
+        elif final_score < 0: verdict = "减仓"; risk = "高"
 
         risk = "高" if verdict in ["清仓", "卖出", "离场"] else risk
-
-        base_pos = 0
-        if verdict in ["买入", "持有", "主力锁筹"]: base_pos = 60
+        base_pos = 60 if verdict in ["买入", "持有", "主力锁筹"] else 0
         if final_score > 80: base_pos = 80
         if "低吸" in verdict: base_pos = 30
-        if s_score < 0: base_pos = max(0, base_pos - 20)
         
         curr_1 = df.iloc[-2]; curr_2 = df.iloc[-3]
         
@@ -371,53 +357,40 @@ class AlphaGalaxyUltimate:
         })
 
         self._add_metric("核心指标", f"RSI:{int(curr['rsi'])}", f"ATR:{round(curr['atr'],2)}", "RSI>80过热", "-")
-        self._add_metric("趋势数据", f"ADX:{int(curr['adx'])}", f"CCI:{int(curr['cci'])}", "ADX>25强趋势", "-")
         self._add_metric("资金筹码", f"主力:{flow_val}亿", f"获利盘:{int(winner_pct)}%", "获利>90%有风险", "-")
-        spot_name = self.data['spot'].get('名称', self.symbol)
         pe_val = self.data['spot'].get('市盈率-动态','-')
         self._add_metric("基本面/舆情", f"PE:{pe_val}", f"舆情:{s_score}", "PE<20低估", "-")
         
         self.history_metrics = {
-            "pct_0": curr['pct_change'], "pct_1": curr_1['pct_change'], "pct_2": curr_2['pct_change'],
-            "cmf_0": curr['cmf'], "cmf_1": curr_1['cmf'], "cmf_2": curr_2['cmf']
+            "pct_0": curr['pct_change'], "pct_1": curr_1['pct_change'], 
+            "cmf_0": curr['cmf'], "cmf_1": curr_1['cmf']
         }
         
-        # [优化点] 增强点位输出 (区分压力与支撑)
-        # 1. 动态止损
-        self.levels.append(["🔴 止损(ATR)", round(stop_price, 2), "硬止损位"])
-        # 2. 均线系统 (根据当前价格判断是压是撑)
+        # 点位
         ma20 = curr['ma20']; ma60 = curr['ma60']
         ma20_type = "🟢 MA20支撑" if close > ma20 else "🔴 MA20压力"
         ma60_type = "🟢 生命线(MA60)" if close > ma60 else "🔴 生命线(MA60)"
+        self.levels.append(["🔴 止损(ATR)", round(stop_price, 2), "硬止损位"])
         self.levels.append([ma20_type, round(ma20, 2), "趋势线"])
         self.levels.append([ma60_type, round(ma60, 2), "牛熊分界"])
-        # 3. 箱体 (20日)
-        high_20 = df['high'].tail(20).max()
-        low_20 = df['low'].tail(20).min()
-        self.levels.append(["🔴 近期箱顶", round(high_20, 2), "20日新高压力"])
-        self.levels.append(["🟢 近期箱底", round(low_20, 2), "20日新低支撑"])
-        # 4. 筹码成本 (粗略估算60日均价)
-        avg_cost = df['close'].tail(60).mean()
-        self.levels.append(["🌊 筹码均价", round(avg_cost, 2), "60日成本区"])
-        # 5. 布林轨
-        self.levels.append(["🔴 布林上轨", round(curr['up'], 2), "冲高回落压力"])
-        self.levels.append(["🟢 布林下轨", round(curr['dn'], 2), "超跌反弹支撑"])
+        self.levels.append(["🔴 近期箱顶", round(df['high'].tail(20).max(), 2), "20日新高"])
+        self.levels.append(["🟢 近期箱底", round(df['low'].tail(20).min(), 2), "20日新低"])
+        
+        return True
 
     def _add_metric(self, name, val1, val2, explanation, logic):
         self.metrics.append({"维度": name, "数据1": val1, "数据2": val2, "判定逻辑": explanation})
 
-    # === [适配点] 改写 save_excel 为 generate_excel_in_memory 以适配 Web 下载 ===
+    # === 适配 Web 下载 ===
     def generate_excel_in_memory(self):
-        if not self._fetch_data(): return None, None
+        # 换用并行接口
+        if not self._fetch_data_parallel(): return None, None
         self._analyze()
-        
-        self._update_progress(90, "分析完成，正在渲染 Excel 报表...")
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         spot_name = self.data['spot'].get('名称', self.symbol)
-        filename = f"{self.symbol}_{spot_name}_增强版_{timestamp}.xlsx"
+        filename = f"{self.symbol}_{spot_name}_极速增强版_{timestamp}.xlsx"
         
-        # 使用内存 IO
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             s_data = [
@@ -436,10 +409,9 @@ class AlphaGalaxyUltimate:
             ]
             metrics_df = pd.concat([metrics_df, pd.DataFrame(extra_rows)], ignore_index=True)
             metrics_df.to_excel(writer, sheet_name='详细指标', index=False)
-            
             pd.DataFrame(self.levels, columns=["类型", "价格", "说明"]).to_excel(writer, sheet_name='点位管理', index=False)
             
-            # 字典页 (完整保留)
+            # 形态图解字典
             patterns_desc = [
                 ['形态名称', '类型', '大白话说明'],
                 ['早晨之星', '买入', '底部三日组合：阴线+星线+阳线，强力见底'],
@@ -493,13 +465,12 @@ class AlphaGalaxyUltimate:
             ]
             pd.DataFrame(indicators_desc[1:], columns=indicators_desc[0]).to_excel(writer, sheet_name='指标说明书', index=False)
             
-        self._update_progress(100, "全部完成！")
         return output.getvalue(), filename
 
 # ================= 8. Streamlit 前端交互层 =================
 
-st.title("🚀 Alpha Galaxy Ultimate")
-st.markdown("### 全维扫描 | 舆情分析 | 点位管理 (完整增强版)")
+st.title("🚀 Alpha Galaxy Ultimate (极速版)")
+st.markdown("### 全维扫描 | 多线程引擎 | 智能缓存")
 
 # 1. 输入区
 col_input, col_btn = st.columns([3, 1])
@@ -516,18 +487,9 @@ if run_btn:
     if not stock_code:
         st.error("⚠️ 请先输入股票代码")
     else:
-        # --- 创建进度条 ---
-        progress_bar = st.progress(0, text="准备开始...")
-        
-        # 定义回调函数
-        def update_bar(percent, msg):
-            progress_bar.progress(percent, text=msg)
-
-        # 实例化并运行
-        try:
-            app = AlphaGalaxyUltimate(stock_code, progress_callback=update_bar)
+        with st.spinner(f"正在全维扫描 {stock_code} (已启用多线程加速)..."):
+            app = AlphaGalaxyUltimate(stock_code)
             
-            # 执行分析并获取 Excel 二进制流
             excel_data, file_name = app.generate_excel_in_memory()
             
             if excel_data:
@@ -569,6 +531,3 @@ if run_btn:
                     type="primary",
                     use_container_width=True
                 )
-        except Exception as e:
-            st.error(f"运行出错: {str(e)}")
-            st.info("请检查股票代码是否正确，或稍后重试。")
