@@ -6,17 +6,16 @@ from snownlp import SnowNLP
 from datetime import datetime, timedelta
 import warnings
 import io
-from concurrent.futures import ThreadPoolExecutor
 
 # 忽略警告
 warnings.filterwarnings('ignore')
 
 # --- 页面基础配置 ---
-st.set_page_config(page_title="Alpha Galaxy 极速版", layout="wide")
+st.set_page_config(page_title="Alpha Galaxy 稳定极速版", layout="wide")
 
-# ================= 0. 缓存加速层 (新增优化) =================
-# 加上这个装饰器，Streamlit 会把结果存起来，默认 5 分钟(300秒)内不再重复下载全市场数据
-# 这样切换不同股票时，速度会飞快
+# ================= 0. 缓存加速层 (保留核心加速) =================
+# 这里的缓存时间设置为 300秒 (5分钟)
+# 这是加速的关键：只缓存全市场概览，不缓存单只K线，兼顾速度与实时性
 @st.cache_data(ttl=300)
 def get_market_spot_data():
     try:
@@ -44,75 +43,60 @@ class AlphaGalaxyUltimate:
         elif self.symbol.startswith('8') or self.symbol.startswith('4'): self.index_name = "北证50"
         else: self.index_name = "深证成指"
 
-    # ================= 1. 数据中台 (改为多线程并行) =================
-    def _fetch_data_parallel(self):
-        st.toast(f"🚀 [极速扫描] 正在并发读取 {self.symbol} ...")
+    # ================= 1. 数据中台 (回归顺序执行，确保数据绝对稳定) =================
+    def _fetch_data(self):
+        st.toast(f"🚀 [稳定扫描] 正在读取 {self.symbol} ...")
         
-        # 定义独立的任务函数
-        def task_hist():
-            try:
-                end = datetime.now().strftime("%Y%m%d")
-                start = (datetime.now() - timedelta(days=730)).strftime("%Y%m%d")
-                # 尝试读取
-                df = ak.stock_zh_a_hist(symbol=self.symbol, period='daily', start_date=start, end_date=end, adjust='qfq')
-                if df is not None and not df.empty:
-                    df.rename(columns={'日期':'date', '开盘':'open', '收盘':'close', '最高':'high', '最低':'low', '成交量':'volume', '换手率':'turnover'}, inplace=True)
-                    return df
-            except: pass
-            return None
+        # 1.1 实时行情 (利用缓存加速)
+        try:
+            full_spot = get_market_spot_data()
+            target = full_spot[full_spot['代码'] == self.symbol]
+            
+            if not target.empty:
+                target = target.copy()
+                for col in ['市盈率-动态', '市净率', '总市值', '换手率', '最新价']:
+                    if col in target.columns:
+                        target[col] = pd.to_numeric(target[col], errors='coerce')
+                self.data['spot'] = target.iloc[0]
+            else:
+                self.data['spot'] = {
+                    '名称': self.symbol, '最新价': 0, '市盈率-动态': -1, '市净率': -1, '换手率': 0
+                }
+        except Exception as e:
+            self.data['spot'] = {'名称': self.symbol, '市盈率-动态': -1, '市净率': -1}
 
-        def task_flow():
-            try:
-                mkt = "sh" if self.symbol.startswith("6") else "sz"
-                flow = ak.stock_individual_fund_flow(stock=self.symbol, market=mkt)
-                if flow is not None and not flow.empty:
-                    return flow.sort_values('日期').tail(10)
-            except: pass
-            return pd.DataFrame()
-
-        def task_news():
-            try:
-                return ak.stock_news_em(symbol=self.symbol)
-            except: return pd.DataFrame()
-
-        # --- 核心优化：使用线程池同时运行 ---
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            # 1. 实时行情 (利用缓存，极快)
-            # 注意：实时行情不放入线程池，因为我们要利用 Streamlit 的全局缓存
-            try:
-                full_spot = get_market_spot_data()
-                target = full_spot[full_spot['代码'] == self.symbol]
-                if not target.empty:
-                    target = target.copy()
-                    for col in ['市盈率-动态', '市净率', '总市值', '换手率', '最新价']:
-                        if col in target.columns:
-                            target[col] = pd.to_numeric(target[col], errors='coerce')
-                    self.data['spot'] = target.iloc[0]
-                else:
-                    self.data['spot'] = {'名称': self.symbol, '最新价': 0, '市盈率-动态': -1, '市净率': -1, '换手率': 0}
-            except:
-                self.data['spot'] = {'名称': self.symbol, '市盈率-动态': -1, '市净率': -1}
-
-            # 2. 并行发起网络请求 (Hist, Flow, News)
-            future_hist = executor.submit(task_hist)
-            future_flow = executor.submit(task_flow)
-            future_news = executor.submit(task_news)
-
-            # 3. 获取结果
-            self.data['hist'] = future_hist.result()
-            self.data['flow'] = future_flow.result()
-            self.data['news'] = future_news.result()
-
-        # 检查关键数据
-        if self.data['hist'] is None:
-            st.error(f"❌ 无法获取 K 线数据，请检查代码 {self.symbol} 是否正确。")
+        # 1.2 历史K线 (顺序请求，确保不丢数据)
+        try:
+            end = datetime.now().strftime("%Y%m%d")
+            start = (datetime.now() - timedelta(days=730)).strftime("%Y%m%d")
+            hist = ak.stock_zh_a_hist(symbol=self.symbol, period='daily', start_date=start, end_date=end, adjust='qfq')
+            
+            if hist is None or hist.empty:
+                st.error(f"❌ K线数据为空，请检查代码 {self.symbol}。")
+                return False
+                
+            hist.rename(columns={'日期':'date', '开盘':'open', '收盘':'close', '最高':'high', '最低':'low', '成交量':'volume', '换手率':'turnover'}, inplace=True)
+            self.data['hist'] = hist
+            
+            # 数据对齐补全
+            if self.data['spot'].get('最新价', 0) == 0: 
+                self.data['spot']['最新价'] = hist.iloc[-1]['close']
+            if self.data['spot'].get('换手率', 0) == 0 and 'turnover' in hist.columns: 
+                self.data['spot']['换手率'] = hist.iloc[-1]['turnover']
+                 
+        except Exception as e:
+            st.error(f"K线数据获取失败: {e}")
             return False
 
-        # 数据补全
-        if self.data['spot'].get('最新价', 0) == 0: 
-            self.data['spot']['最新价'] = self.data['hist'].iloc[-1]['close']
-        if self.data['spot'].get('换手率', 0) == 0 and 'turnover' in self.data['hist'].columns:
-            self.data['spot']['换手率'] = self.data['hist'].iloc[-1]['turnover']
+        # 1.3 资金流 & 舆情
+        try:
+            mkt = "sh" if self.symbol.startswith("6") else "sz"
+            flow = ak.stock_individual_fund_flow(stock=self.symbol, market=mkt)
+            self.data['flow'] = flow.sort_values('日期').tail(10) if (flow is not None and not flow.empty) else pd.DataFrame()
+        except: self.data['flow'] = pd.DataFrame()
+        
+        try: self.data['news'] = ak.stock_news_em(symbol=self.symbol)
+        except: self.data['news'] = pd.DataFrame()
 
         return True
 
@@ -159,7 +143,7 @@ class AlphaGalaxyUltimate:
         df['d'] = df['k'].ewm(com=2, adjust=False).mean()
         df['j'] = 3 * df['k'] - 2 * df['d']
         
-        # RSI (Wilder)
+        # RSI
         delta = df['close'].diff()
         up = delta.clip(lower=0); down = -1 * delta.clip(upper=0)
         for period in [6, 12, 24]:
@@ -216,7 +200,7 @@ class AlphaGalaxyUltimate:
         if total_vol == 0: return 0
         return (winner_vol / total_vol) * 100
 
-    # ================= 5. K线形态识别 (全量保留) =================
+    # ================= 5. K线形态识别 =================
     def _analyze_pattern_full(self, df):
         if len(df) < 20: return [], [], 0
         bull_pats, bear_pats = [], []
@@ -283,7 +267,7 @@ class AlphaGalaxyUltimate:
         close = curr['close']
         
         # 1. 基础技术
-        if close > curr['ma20']: score += 20
+        if close > curr['ma20']: score += 20 # 这里只加分，不写reason，所以会有分数但可能没文案
         if curr['adx'] > 25: score += 10
         if curr['cci'] > 100: score += 10
         score += k_score + sentiment_score
@@ -311,6 +295,10 @@ class AlphaGalaxyUltimate:
         if curr['dif'] > curr['dea'] and curr['rsi'] > 80:
             signals.append("假买点"); reasons.append("🚫 [组合B] MACD金叉但RSI过热"); score -= 5
             if priority_verdict == "买入": priority_verdict = "观察"
+        
+        # 【关键】J值逻辑在这里，完全保留
+        if curr['j'] < 0: reasons.append(f"📈 [指标] J值超卖"); score += 10
+        elif curr['j'] > 100: reasons.append(f"📉 [指标] J值钝化"); score -= 5
         
         if close < curr['dn'] and (flow_val > 0.5 or curr['cmf'] > 0.1):
             signals.append("黄金坑"); reasons.append("💰 [组合C] 跌破下轨+资金流入"); score += 20; priority_verdict = "低吸"
@@ -383,13 +371,12 @@ class AlphaGalaxyUltimate:
 
     # === 适配 Web 下载 ===
     def generate_excel_in_memory(self):
-        # 换用并行接口
-        if not self._fetch_data_parallel(): return None, None
+        if not self._fetch_data(): return None, None
         self._analyze()
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         spot_name = self.data['spot'].get('名称', self.symbol)
-        filename = f"{self.symbol}_{spot_name}_极速增强版_{timestamp}.xlsx"
+        filename = f"{self.symbol}_{spot_name}_稳定极速版_{timestamp}.xlsx"
         
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -469,8 +456,8 @@ class AlphaGalaxyUltimate:
 
 # ================= 8. Streamlit 前端交互层 =================
 
-st.title("🚀 Alpha Galaxy Ultimate (极速版)")
-st.markdown("### 全维扫描 | 多线程引擎 | 智能缓存")
+st.title("🚀 Alpha Galaxy Ultimate (稳定版)")
+st.markdown("### 全维扫描 | 智能缓存 | 数据完整性保护")
 
 # 1. 输入区
 col_input, col_btn = st.columns([3, 1])
@@ -487,7 +474,7 @@ if run_btn:
     if not stock_code:
         st.error("⚠️ 请先输入股票代码")
     else:
-        with st.spinner(f"正在全维扫描 {stock_code} (已启用多线程加速)..."):
+        with st.spinner(f"正在扫描 {stock_code}..."):
             app = AlphaGalaxyUltimate(stock_code)
             
             excel_data, file_name = app.generate_excel_in_memory()
