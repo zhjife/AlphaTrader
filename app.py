@@ -13,10 +13,11 @@ warnings.filterwarnings('ignore')
 # --- 页面基础配置 ---
 st.set_page_config(page_title="Alpha Galaxy 完整增强版", layout="wide")
 
-# ================= 核心类定义 (1:1 完整移植) =================
+# ================= 核心类定义 (1:1 完整移植 + 进度条回调) =================
 class AlphaGalaxyUltimate:
-    def __init__(self, symbol):
+    def __init__(self, symbol, progress_callback=None):
         self.symbol = str(symbol)
+        self.progress_callback = progress_callback # 新增：进度回调函数
         self.data = {}
         self.report = {
             "verdict": "观望", "risk_level": "中", 
@@ -33,10 +34,14 @@ class AlphaGalaxyUltimate:
         elif self.symbol.startswith('8') or self.symbol.startswith('4'): self.index_name = "北证50"
         else: self.index_name = "深证成指"
 
+    # 辅助方法：更新进度
+    def _update_progress(self, percent, message):
+        if self.progress_callback:
+            self.progress_callback(percent, message)
+
     # ================= 1. 数据中台 =================
     def _fetch_data(self):
-        # 使用 st.toast 替代 print
-        st.toast(f"🚀 [全维扫描] 正在读取 {self.symbol} ...")
+        self._update_progress(10, f"正在连接交易所接口，读取 {self.symbol} 实时行情...")
         
         # 1.1 实时行情
         try:
@@ -57,6 +62,7 @@ class AlphaGalaxyUltimate:
             self.data['spot'] = {'名称': self.symbol, '市盈率-动态': -1, '市净率': -1}
 
         # 1.2 历史K线
+        self._update_progress(25, "正在下载近两年历史K线数据...")
         try:
             end = datetime.now().strftime("%Y%m%d")
             start = (datetime.now() - timedelta(days=730)).strftime("%Y%m%d")
@@ -77,6 +83,7 @@ class AlphaGalaxyUltimate:
             return False
 
         # 1.3 资金流 & 舆情
+        self._update_progress(40, "正在追踪主力资金流向与舆情...")
         try:
             flow = ak.stock_individual_fund_flow(stock=self.symbol, market="sh" if self.symbol.startswith("6") else "sz")
             self.data['flow'] = flow.sort_values('日期').tail(10) if (flow is not None and not flow.empty) else pd.DataFrame()
@@ -310,7 +317,10 @@ class AlphaGalaxyUltimate:
 
     # ================= 7. 综合分析主控 =================
     def _analyze(self):
+        self._update_progress(55, "正在计算 RSI, MACD, Bollinger 等 12 种技术指标...")
         df = self._calc_indicators(self.data['hist'].copy())
+        
+        self._update_progress(65, "正在进行 K 线形态识别与筹码分布计算...")
         winner_pct = self._calc_chip_winner(df)
         
         curr = df.iloc[-1]
@@ -320,7 +330,8 @@ class AlphaGalaxyUltimate:
         if not self.data['flow'].empty and '主力净流入净额' in self.data['flow'].columns:
             try: flow_val = round(self.data['flow']['主力净流入净额'].iloc[-3:].sum() / 1e8, 2)
             except: pass
-            
+        
+        self._update_progress(75, "正在运行 Alpha Galaxy 核心决策逻辑...")
         s_score, s_msg = self._analyze_sentiment()
         bull_pats, bear_pats, k_score = self._analyze_pattern_full(df)
         combo_signals, combo_logic, combo_verdict, final_score = self._check_combo_logic(curr, flow_val, s_score, k_score, winner_pct)
@@ -399,6 +410,8 @@ class AlphaGalaxyUltimate:
     def generate_excel_in_memory(self):
         if not self._fetch_data(): return None, None
         self._analyze()
+        
+        self._update_progress(90, "分析完成，正在渲染 Excel 报表...")
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         spot_name = self.data['spot'].get('名称', self.symbol)
@@ -480,6 +493,7 @@ class AlphaGalaxyUltimate:
             ]
             pd.DataFrame(indicators_desc[1:], columns=indicators_desc[0]).to_excel(writer, sheet_name='指标说明书', index=False)
             
+        self._update_progress(100, "全部完成！")
         return output.getvalue(), filename
 
 # ================= 8. Streamlit 前端交互层 =================
@@ -502,9 +516,16 @@ if run_btn:
     if not stock_code:
         st.error("⚠️ 请先输入股票代码")
     else:
-        # 使用 spinner 显示加载状态
-        with st.spinner(f"正在全维扫描 {stock_code}，请稍候..."):
-            app = AlphaGalaxyUltimate(stock_code)
+        # --- 创建进度条 ---
+        progress_bar = st.progress(0, text="准备开始...")
+        
+        # 定义回调函数
+        def update_bar(percent, msg):
+            progress_bar.progress(percent, text=msg)
+
+        # 实例化并运行
+        try:
+            app = AlphaGalaxyUltimate(stock_code, progress_callback=update_bar)
             
             # 执行分析并获取 Excel 二进制流
             excel_data, file_name = app.generate_excel_in_memory()
@@ -548,3 +569,6 @@ if run_btn:
                     type="primary",
                     use_container_width=True
                 )
+        except Exception as e:
+            st.error(f"运行出错: {str(e)}")
+            st.info("请检查股票代码是否正确，或稍后重试。")
