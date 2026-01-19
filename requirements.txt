@@ -6,3 +6,4 @@ openpyxl
 tqdm
 requests
 streamlit
+lxml
