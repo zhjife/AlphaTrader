@@ -2,54 +2,52 @@ import streamlit as st
 import time
 import pandas as pd
 
-# --- 1. 设置网页为宽屏模式 (大屏体验) ---
-st.set_page_config(page_title="Codespaces 控制台", layout="wide")
+# 1. 设置网页标题
+st.set_page_config(page_title="股票数据下载", layout="wide")
 
-st.title("🚀 Codespaces 任务控制中心")
-st.markdown("---") # 分割线
+st.title("🚀 股票数据下载器")
 
-# --- 2. 左侧栏：参数设置 (可选) ---
-with st.sidebar:
-    st.header("设置")
-    user_input = st.text_input("输入一些参数(例如文件名前缀):", "my_data")
+# --- 核心修改：把输入框放在主界面，而不是侧边栏 ---
+st.subheader("第一步：输入参数")
 
-# --- 3. 主区域：运行按钮 ---
-st.subheader("1. 执行任务")
-st.write("点击下方按钮开始运行服务器端脚本...")
+# 这里创建输入框，默认留空
+stock_code = st.text_input("请输入股票代码 (例如: 600519, AAPL)", value="")
 
-if st.button('▶️ 开始运行代码', type="primary", use_container_width=True):
+# --- 运行按钮 ---
+# 只有当用户点击按钮时，才去检查有没有输入代码
+if st.button('▶️ 开始运行并获取数据', type="primary", use_container_width=True):
     
-    # 显示加载状态
-    with st.spinner('正在 Codespaces 中疯狂计算中...'):
-        
-        # === 在这里替换为你真实的代码逻辑 ===
-        time.sleep(2) # 模拟耗时操作
-        
-        # 假设我们生成了一些数据 (这里用 DataFrame 举例)
-        data = {
-            'ID': [1, 2, 3, 4],
-            '名称': ['任务A', '任务B', '任务C', '任务D'],
-            '结果': ['成功', '成功', '失败', '成功'],
-            '备注': [f'来自用户输入: {user_input}'] * 4
-        }
-        df = pd.DataFrame(data)
-        csv_data = df.to_csv(index=False).encode('utf-8')
-        # ==================================
+    # 检查用户是否填了代码
+    if not stock_code:
+        st.error("❌ 请先输入股票代码，然后再点运行！")
+    else:
+        with st.spinner(f'正在搜索代码为 [{stock_code}] 的数据...'):
+            
+            # === 在这里放入你真实的股票爬虫逻辑 ===
+            # 例如: df = get_stock_data(stock_code)
+            
+            # (这里是模拟演示)
+            time.sleep(1.5) 
+            data = {
+                '股票代码': [stock_code, stock_code, stock_code],
+                '交易日期': ['2023-10-01', '2023-10-02', '2023-10-03'],
+                '收盘价': [100.5, 102.3, 101.8],
+                '涨跌幅': ['+0.5%', '+1.8%', '-0.5%']
+            }
+            df = pd.DataFrame(data)
+            csv_data = df.to_csv(index=False).encode('utf-8')
+            # ==================================
 
-        st.success("✅ 任务执行成功！")
+            st.success(f"✅ [{stock_code}] 数据获取成功！")
 
-        # --- 4. 显示结果预览 ---
-        st.subheader("2. 结果预览")
-        st.dataframe(df, use_container_width=True)
+            # 显示结果预览
+            st.dataframe(df, use_container_width=True)
 
-        # --- 5. 提供下载功能 ---
-        st.subheader("3. 获取文件")
-        
-        # 核心功能：下载按钮
-        st.download_button(
-            label="📥 点击下载结果 (result.csv)",
-            data=csv_data,
-            file_name=f"{user_input}_result.csv",
-            mime="text/csv",
-            type="primary" # 按钮样式
-        )
+            # 显示下载按钮
+            st.download_button(
+                label=f"📥 下载 {stock_code}.csv",
+                data=csv_data,
+                file_name=f"{stock_code}_data.csv",
+                mime="text/csv",
+                type="secondary"
+            )
