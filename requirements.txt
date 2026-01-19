@@ -5,3 +5,4 @@ snownlp
 openpyxl
 tqdm
 requests
+streamlit
