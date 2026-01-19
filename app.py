@@ -15,7 +15,7 @@ st.set_page_config(page_title="Alpha Galaxy 最终完整版", layout="wide")
 
 # ================= 0. 缓存加速层 =================
 # 只缓存全市场概览数据，加速 80% 的同时不影响单只股票的计算精度
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=1800)
 def get_market_spot_data():
     try:
         return ak.stock_zh_a_spot_em()
