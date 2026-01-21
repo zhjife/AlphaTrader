@@ -6,4 +6,5 @@ openpyxl
 tqdm
 requests
 streamlit
-lxml
+lxm
+plotly
