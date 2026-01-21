@@ -1,16 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Alpha Galaxy Omni-Logic Ultimate (完全体·增强版)
+Alpha Galaxy Omni-Logic Ultimate (完全体·增强版) - EastMoney Optimized
 ================================================
-【核心原则】: 只做加法，不遗漏任何原有逻辑、形态和指标。
-【新增功能】:
-1. [Index] 支持大盘指数分析 (输入 sh000001, sz399001 等)
-2. [Box]   60日箱体深度分析 (突破/破位/震荡判定)
-3. [Level] 动态压力支撑位输出 (根据现价判断MA是压还是撑)
-【保留功能】:
-1. 完整保留原版32种K线形态识别
-2. 完整保留原版所有技术指标 (ADX, CMF, RSI-Wilder, etc.)
-3. 完整保留原版所有战法逻辑 (黄金坑, 锁筹, 假买点等)
+【数据源】: 东方财富 (Akshare)
+【特  性】: 实时数据、资金流、舆情分析、全指标
+【优  化】: 增加重试机制，增加接口容错
 """
 
 import akshare as ak
@@ -20,20 +14,21 @@ from snownlp import SnowNLP
 from datetime import datetime, timedelta
 import warnings
 import os
+import time  # 新增 time 用于重试延迟
 
 warnings.filterwarnings('ignore')
 
 class AlphaGalaxyUltimate:
     def __init__(self, symbol):
-        self.raw_symbol = str(symbol)
+        self.raw_symbol = str(symbol).strip()
         self.is_index = False
         
-        # 判定是否为指数
-        # 逻辑：以sh/sz开头，或属于常见指数代码，或399开头
-        if self.raw_symbol.lower().startswith(('sh', 'sz')) or self.raw_symbol.startswith('399') or self.raw_symbol in ['000001', '000300', '000016', '000905']:
-             # 特殊处理：000001 默认当做个股(平安)，除非带sh前缀；但在本逻辑中，若用户输入 sh000001 则明确为指数
-             if self.raw_symbol.lower().startswith(('sh', 'sz')) or self.raw_symbol.startswith('399'):
-                 self.is_index = True
+        # 智能识别指数
+        # 逻辑：以sh/sz开头且后续为指数常用代码，或399开头
+        lower_sym = self.raw_symbol.lower()
+        if lower_sym.startswith(('sh000', 'sh000001', 'sz399', '399')):
+            self.is_index = True
+        # 特殊：如果输入纯数字 000001，默认当做平安银行；输入 sh000001 才是上证指数
         
         self.symbol = self.raw_symbol
         self.data = {}
@@ -42,7 +37,7 @@ class AlphaGalaxyUltimate:
             "score": 0, "mode": "震荡", "kelly_pos": 0, 
             "logic": [], "signals": [],
             "patterns_bull": [], "patterns_bear": [],
-            "box_info": {} # 新增：箱体信息
+            "box_info": {} 
         }
         self.metrics = []
         self.levels = []
@@ -50,87 +45,167 @@ class AlphaGalaxyUltimate:
         
         self.index_name = "市场指数" if self.is_index else "个股"
 
-    # ================= 1. 数据中台 (兼容指数) =================
+    # ================= 1. 数据中台 (东方财富·高强版) =================
     def _fetch_data(self):
-        print(f"🚀 [全维扫描] 正在读取 {self.symbol} ({self.index_name}) ...")
+        print(f"🚀 [全维扫描] 正在连接东方财富接口: {self.symbol} ...")
         
+        # 定义重试次数
+        max_retries = 3
+        
+        # --- 1.1 K线数据获取 (核心) ---
+        hist = None
+        for attempt in range(max_retries):
+            try:
+                end = datetime.now().strftime("%Y%m%d")
+                start = (datetime.now() - timedelta(days=730)).strftime("%Y%m%d")
+                
+                if self.is_index:
+                    # 指数处理逻辑
+                    code = self.symbol
+                    # 补全前缀以适配接口
+                    if code.isdigit():
+                        if code.startswith('000'): code = 'sh' + code
+                        elif code.startswith('399'): code = 'sz' + code
+                    
+                    try:
+                        # 尝试接口 A: 东方财富指数历史
+                        hist = ak.stock_zh_index_daily_em(symbol=code, start_date=start, end_date=end)
+                    except:
+                        # 尝试接口 B: 新浪指数历史 (备用)
+                        clean_code = code.replace('sh', '').replace('sz', '')
+                        hist = ak.stock_zh_index_daily(symbol=clean_code)
+                
+                else:
+                    # 个股处理逻辑
+                    # 清洗代码：akshare 个股接口通常只需要数字，或者特定的 sh/sz 前缀
+                    # stock_zh_a_hist 需要纯数字代码
+                    code_num = "".join(filter(str.isdigit, self.symbol))
+                    
+                    # 尝试接口 A: 东方财富个股历史 (复权数据)
+                    hist = ak.stock_zh_a_hist(symbol=code_num, period='daily', start_date=start, end_date=end, adjust='qfq')
+                
+                if hist is not None and not hist.empty:
+                    break # 获取成功，跳出重试
+                    
+            except Exception as e:
+                print(f"⚠️ 第 {attempt + 1} 次尝试连接失败: {e}")
+                time.sleep(1) # 休息1秒重试
+
+        # 如果重试后依然失败
+        if hist is None or hist.empty:
+            print(f"❌ 无法连接数据源。请检查：\n1. 代码 {self.symbol} 是否正确\n2. 是否在海外IP(GitHub Codespaces)被墙\n3. 请尝试本地运行。")
+            return False
+
+        # 标准化列名
+        rename_map = {
+            '日期':'date', '开盘':'open', '收盘':'close', '最高':'high', '最低':'low', 
+            '成交量':'volume', '成交额':'amount', '换手率':'turnover',
+            '振幅':'amplitude', '涨跌幅':'pct_chg', '涨跌额':'chg'
+        }
+        hist.rename(columns=rename_map, inplace=True)
+        self.data['hist'] = hist
+
+        # --- 1.2 实时快照 (Spot) ---
         try:
-            end = datetime.now().strftime("%Y%m%d")
-            start = (datetime.now() - timedelta(days=730)).strftime("%Y%m%d")
-            
-            # 1.1 K线与实时数据
             if self.is_index:
-                # 指数接口
-                code = self.symbol
-                if code.isdigit(): # 简单的补全尝试
-                    if code.startswith('000'): code = 'sh' + code
-                    elif code.startswith('399'): code = 'sz' + code
-                
-                # 尝试获取指数K线
+                # 指数实时
+                code_num = "".join(filter(str.isdigit, self.symbol))
                 try:
-                    hist = ak.stock_zh_index_daily_em(symbol=code, start_date=start, end_date=end)
+                    spot_df = ak.stock_zh_index_spot_em(symbol=code_num) # 某些指数代码需尝试不同参数
+                    if spot_df.empty: spot_df = ak.stock_zh_index_spot()
                 except:
-                    hist = ak.stock_zh_index_daily(symbol=code) # 备用
+                    spot_df = pd.DataFrame() # 兜底
                 
-                # 尝试获取指数实时
-                try:
-                    # 某些指数spot接口需要去前缀
-                    simple_code = code.replace('sh','').replace('sz','')
-                    spot_df = ak.stock_zh_index_spot_em(symbol=simple_code)
-                    if not spot_df.empty:
-                        self.data['spot'] = spot_df.iloc[0].to_dict()
-                    else:
-                        self.data['spot'] = {'名称': code, '最新价': 0}
-                except:
-                    self.data['spot'] = {'名称': code, '最新价': 0, '市盈率-动态': -1}
-            
+                if not spot_df.empty and '最新价' in spot_df.columns:
+                     # 尝试找到对应的行，若找不到则取第一行
+                    self.data['spot'] = spot_df.iloc[0].to_dict()
+                else:
+                    # 构造假数据以免报错
+                    self.data['spot'] = {'名称': self.symbol, '最新价': hist.iloc[-1]['close']}
             else:
-                # 个股接口 (保持原样)
-                spot = ak.stock_zh_a_spot_em()
-                target = spot[spot['代码'] == self.symbol]
+                # 个股实时 (akshare 实时接口拉取所有A股，速度较慢，但数据全)
+                # 优化：直接尝试单股接口如果存在(akshare变动频繁)，这里用通用逻辑
+                spot_all = ak.stock_zh_a_spot_em()
+                code_num = "".join(filter(str.isdigit, self.symbol))
+                target = spot_all[spot_all['代码'] == code_num]
                 
                 if not target.empty:
                     target = target.copy()
+                    # 强制转数值
                     for col in ['市盈率-动态', '市净率', '总市值', '换手率', '最新价']:
                         if col in target.columns:
                             target[col] = pd.to_numeric(target[col], errors='coerce')
-                    self.data['spot'] = target.iloc[0]
+                    self.data['spot'] = target.iloc[0].to_dict()
                 else:
-                    self.data['spot'] = {'名称': self.symbol, '最新价': 0, '市盈率-动态': -1, '市净率': -1, '换手率': 0}
-
-                hist = ak.stock_zh_a_hist(symbol=self.symbol, period='daily', start_date=start, end_date=end, adjust='qfq')
-
-            # 数据清洗
-            if hist is None or hist.empty:
-                print(f"❌ 无法读取K线数据，请确认代码 {self.symbol} 是否正确。")
-                return False
-                
-            hist.rename(columns={'日期':'date', '开盘':'open', '收盘':'close', '最高':'high', '最低':'low', '成交量':'volume', '换手率':'turnover'}, inplace=True)
-            self.data['hist'] = hist
-            
-            # 补全缺失数据
-            if self.data['spot'].get('最新价', 0) == 0: self.data['spot']['最新价'] = hist.iloc[-1]['close']
-            if not self.is_index and self.data['spot'].get('换手率', 0) == 0 and 'turnover' in hist.columns: 
-                self.data['spot']['换手率'] = hist.iloc[-1]['turnover']
-                 
+                    # 如果实时接口找不到（如停牌），用K线最后一日填充
+                    self.data['spot'] = {
+                        '名称': self.symbol, 
+                        '最新价': hist.iloc[-1]['close'], 
+                        '市盈率-动态': -1, 
+                        '市净率': -1, 
+                        '换手率': hist.iloc[-1].get('turnover', 0)
+                    }
         except Exception as e:
-            print(f"❌ K线数据获取失败: {e}")
-            return False
+            print(f"⚠️ 实时数据获取受限: {e} (将使用收盘数据代替)")
+            self.data['spot'] = {'名称': self.symbol, '最新价': hist.iloc[-1]['close'], '市盈率-动态': -1}
 
-        # 1.2 资金流 & 舆情 (指数通常无此数据，做兼容处理)
+        # --- 1.3 资金流 & 舆情 (容错处理) ---
+        # 如果是指数，或者网络不通，这部分直接跳过，不影响主程序运行
+        self.data['flow'] = pd.DataFrame()
+        self.data['news'] = pd.DataFrame()
+        
         if not self.is_index:
             try:
-                flow = ak.stock_individual_fund_flow(stock=self.symbol, market="sh" if self.symbol.startswith("6") else "sz")
-                self.data['flow'] = flow.sort_values('日期').tail(10) if (flow is not None and not flow.empty) else pd.DataFrame()
-            except: self.data['flow'] = pd.DataFrame()
-            
-            try: self.data['news'] = ak.stock_news_em(symbol=self.symbol)
-            except: self.data['news'] = pd.DataFrame()
-        else:
-            self.data['flow'] = pd.DataFrame()
-            self.data['news'] = pd.DataFrame()
+                # 资金流
+                code_num = "".join(filter(str.isdigit, self.symbol))
+                market_type = "sh" if code_num.startswith("6") else "sz" # 简易判断
+                flow = ak.stock_individual_fund_flow(stock=code_num, market=market_type)
+                if flow is not None and not flow.empty:
+                    self.data['flow'] = flow.sort_values('日期').tail(10)
+            except:
+                pass # 资金流接口常变，失败则忽略
+                
+            try:
+                # 个股新闻
+                code_num = "".join(filter(str.isdigit, self.symbol))
+                news = ak.stock_news_em(symbol=code_num)
+                if news is not None and not news.empty:
+                    self.data['news'] = news
+            except:
+                pass # 舆情接口同理
 
         return True
+
+    # ================= 2. 舆情分析引擎 (保持不变) =================
+    def _analyze_sentiment(self):
+        # ... (保持原代码不变) ...
+        if self.is_index: return 0, "指数不分析个股舆情"
+        try:
+            if self.data['news'].empty: return 0, "无近期舆情"
+            news_df = self.data['news'].head(10)
+            titles = news_df['新闻标题'].tolist()
+            full_text = "。".join(titles)
+            
+            pos_kw = ['增长', '预增', '突破', '利好', '回购', '获批', '中标', '大涨', '新高']
+            neg_kw = ['立案', '调查', '亏损', '减持', '警示', '违规', '大跌', '退市', '被查']
+            
+            hard_score = 0
+            keywords = []
+            for t in titles:
+                for kw in pos_kw:
+                    if kw in t: hard_score += 2; keywords.append(kw)
+                for kw in neg_kw:
+                    if kw in t: hard_score -= 10; keywords.append(kw)
+            
+            s = SnowNLP(full_text)
+            soft_score = (s.sentiments - 0.5) * 10
+            total = max(min(hard_score + soft_score, 20), -20)
+            return round(total, 1), f"关键词:{list(set(keywords))}" if keywords else "舆情平稳"
+        except: return 0, "舆情分析略过"
+    
+    # ... (其余方法 _calc_indicators, _analyze_pattern_full 等均保持原代码不变) ...
+    # 为节省篇幅，请确保将原文件剩余部分（从 _calc_indicators 开始到最后）完整复制到这里。
+    # 也就是将上面 _fetch_data 替换掉原文件对应部分即可。
 
     # ================= 2. 舆情分析引擎 =================
     def _analyze_sentiment(self):
