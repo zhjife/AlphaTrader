@@ -3,4 +3,4 @@ akshare
 pandas
 numpy
 snownlp
-openpyxl
+openpyxlplotly
